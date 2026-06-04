@@ -18,22 +18,26 @@ export const EmotionMirror = () => {
   const [isMirrored, setIsMirrored] = useState(true);
   const [history, setHistory] = useState<EmotionType[]>([]);
   const [videoDims, setVideoDims] = useState({ w: 0, h: 0 });
+  const [camError, setCamError] = useState<string | null>(null);
   
   const emotionBuffer = useRef<Record<string, number>[]>([]);
 
   useEffect(() => {
     const init = async () => {
       await loadModels();
-      if (navigator.mediaDevices.getUserMedia) {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
-            videoRef.current.play().catch(e => console.error("Playback failed:", e));
           }
-        } catch (err) {
+          setCamError(null);
+        } catch (err: any) {
           console.error("Camera permission denied or not found:", err);
+          setCamError(`${err.name}: ${err.message}`);
         }
+      } else {
+        setCamError("Your browser does not support webcam access.");
       }
       setIsLoaded(true);
     };
@@ -63,7 +67,6 @@ export const EmotionMirror = () => {
           if (emotionBuffer.current.length >= SMOOTHING_FRAMES) {
             emotionBuffer.current.shift();
           }
-          // The TypeScript Fix
           emotionBuffer.current.push({ ...sortedDetections[0].expressions } as Record<string, number>);
 
           const averagedExpressions = Object.keys(sortedDetections[0].expressions).reduce((acc, curr) => {
@@ -118,6 +121,8 @@ export const EmotionMirror = () => {
   return (
     <div className="flex h-screen bg-neutral-950 overflow-hidden">
       <div className="flex-1 relative flex items-center justify-center p-8">
+        
+        {/* Toggle Button */}
         <button 
           onClick={() => setIsMirrored(!isMirrored)}
           className="absolute top-8 right-8 z-50 bg-white/10 hover:bg-white/20 p-3 rounded-full backdrop-blur-md transition-colors"
@@ -126,16 +131,25 @@ export const EmotionMirror = () => {
           <FlipHorizontal className="text-white w-6 h-6" />
         </button>
 
-        <div className="relative rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/10" style={{ width: videoDims.w || 'auto', height: videoDims.h || 'auto' }}>
+        {/* Camera Error Display */}
+        {camError && (
+          <div className="absolute z-50 max-w-md p-6 bg-red-500/20 border border-red-500/50 rounded-xl backdrop-blur-md text-center">
+            <h3 className="text-red-400 font-bold mb-2">Camera Access Blocked</h3>
+            <p className="text-white/80 text-sm">{camError}</p>
+            <p className="text-white/60 text-xs mt-4">Make sure no other apps (Zoom, Teams) are using the camera, and check your Windows Privacy settings.</p>
+          </div>
+        )}
+
+        <div className="relative rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/10 flex items-center justify-center bg-neutral-900" style={{ width: videoDims.w || 640, height: videoDims.h || 480 }}>
           <video
             ref={videoRef}
             autoPlay
             muted
             playsInline
-            onPlay={handleVideoPlay}
-            className={isMirrored ? "-scale-x-100" : ""}
+            onLoadedMetadata={handleVideoPlay}
+            className={isMirrored ? "-scale-x-100 object-cover w-full h-full" : "object-cover w-full h-full"}
           />
-          {videoDims.w > 0 && (
+          {videoDims.w > 0 && !camError && (
             <FaceOverlay faces={faces} videoDims={videoDims} isMirrored={isMirrored} />
           )}
         </div>
