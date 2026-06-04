@@ -2,8 +2,6 @@
 
 > Real-time facial emotion detection from your webcam — built with Next.js, face-api.js, and deployed on Vercel.
 
-![Emotion Mirror Preview](./public/preview.png)
-
 ---
 
 ## What It Does
