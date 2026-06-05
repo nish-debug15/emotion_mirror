@@ -9,17 +9,26 @@ import { FlipHorizontal, Loader2, CameraOff, AlertTriangle } from "lucide-react"
 
 const HISTORY_LIMIT = 10;
 const SMOOTHING_FRAMES = 5;
-const DETECTION_INTERVAL_MS = 100; // ~10fps — good balance of responsiveness vs CPU
+const DETECTION_INTERVAL_MS = 100;
+const CAMERA_TIMEOUT_MS = 8000;
+const VIDEO_TIMEOUT_MS = 5000;
 
-type AppStatus = "loading-models" | "requesting-camera" | "ready" | "error" | "no-camera";
+type AppStatus =
+  | "loading-models"
+  | "starting-camera"
+  | "waiting-video"
+  | "ready"
+  | "error-models"
+  | "error-camera";
 
 export const EmotionMirror = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const faceapiRef = useRef<typeof import("face-api.js") | null>(null);
+  const initRef = useRef(false);
 
   const [status, setStatus] = useState<AppStatus>("loading-models");
-  const [errorDetail, setErrorDetail] = useState<string>("");
+  const [errorMsg, setErrorMsg] = useState("");
   const [faces, setFaces] = useState<FaceData[]>([]);
   const [isMirrored, setIsMirrored] = useState(true);
   const [history, setHistory] = useState<EmotionType[]>([]);
@@ -27,17 +36,14 @@ export const EmotionMirror = () => {
 
   const emotionBuffer = useRef<Record<string, number>[]>([]);
 
-  // Start the face detection loop
   const startDetection = useCallback(() => {
     const faceapi = faceapiRef.current;
     const video = videoRef.current;
     if (!faceapi || !video) return;
 
-    // Clear any previous interval
     if (intervalRef.current) clearInterval(intervalRef.current);
 
     intervalRef.current = setInterval(async () => {
-      // Guard: only process when the video has enough data
       if (!videoRef.current || videoRef.current.readyState !== 4) return;
       if (videoRef.current.videoWidth === 0) return;
 
@@ -57,7 +63,6 @@ export const EmotionMirror = () => {
             (a, b) => a.detection.box.x - b.detection.box.x
           );
 
-          // Emotion smoothing buffer
           if (emotionBuffer.current.length >= SMOOTHING_FRAMES) {
             emotionBuffer.current.shift();
           }
@@ -88,9 +93,9 @@ export const EmotionMirror = () => {
               const expToUse =
                 i === 0
                   ? dominant
-                  : Object.entries(d.expressions as unknown as Record<string, number>).reduce((a, b) =>
-                      a[1] > b[1] ? a : b
-                    );
+                  : Object.entries(
+                      d.expressions as unknown as Record<string, number>
+                    ).reduce((a, b) => (a[1] > b[1] ? a : b));
               return {
                 box: d.detection.box,
                 dominantEmotion: expToUse[0] as EmotionType,
@@ -109,107 +114,119 @@ export const EmotionMirror = () => {
           emotionBuffer.current = [];
         }
       } catch (err) {
-        console.warn("[EmotionMirror] Detection error:", err);
+        console.warn("[EmotionMirror] Detection frame error:", err);
       }
     }, DETECTION_INTERVAL_MS);
   }, []);
 
-  // Main init effect
   useEffect(() => {
-    let cancelled = false;
+    if (initRef.current) return;
+    initRef.current = true;
 
     async function init() {
-      // 1. Load face-api.js models
-      setStatus("loading-models");
       try {
+        setStatus("loading-models");
+        console.log("[EmotionMirror] Loading models...");
+
         const faceapi = await loadModels();
         faceapiRef.current = faceapi;
-        console.log("[EmotionMirror] face-api.js ready");
-      } catch (err: unknown) {
-        console.error("[EmotionMirror] Model load failed:", err);
-        setStatus("error");
-        setErrorDetail(
-          err instanceof Error ? err.message : "Failed to load detection models"
-        );
-        return;
-      }
+        console.log("[EmotionMirror] Models loaded ✅");
 
-      if (cancelled) return;
+        setStatus("starting-camera");
+        console.log("[EmotionMirror] Requesting camera...");
 
-      // 2. Request camera
-      setStatus("requesting-camera");
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setStatus("no-camera");
-        setErrorDetail("Your browser does not support webcam access.");
-        return;
-      }
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Your browser does not support webcam access");
+        }
 
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const streamPromise = navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
         });
-      } catch (err: unknown) {
-        console.error("[EmotionMirror] Camera access failed:", err);
-        setStatus("no-camera");
-        setErrorDetail(
-          err instanceof Error
-            ? `${err.name}: ${err.message}`
-            : "Camera permission denied"
+
+        const cameraTimeout = new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Camera timeout — close other apps using camera (Teams, OBS, Discord, Zoom)")),
+            CAMERA_TIMEOUT_MS
+          )
         );
-        return;
-      }
 
-      if (cancelled) {
-        stream.getTracks().forEach((t) => t.stop());
-        return;
-      }
+        const stream = await Promise.race([streamPromise, cameraTimeout]);
+        console.log("[EmotionMirror] Camera stream ✅", stream.getTracks());
 
-      const video = videoRef.current;
-      if (!video) return;
+        setStatus("waiting-video");
 
-      video.srcObject = stream;
+        const waitForRef = () =>
+          new Promise<HTMLVideoElement>((resolve) => {
+            const check = () => {
+              if (videoRef.current) {
+                resolve(videoRef.current);
+              } else {
+                requestAnimationFrame(check);
+              }
+            };
+            check();
+          });
 
-      // 3. Wait for video to be fully playable (readyState 4)
-      await new Promise<void>((resolve) => {
-        const onCanPlay = () => {
-          video.removeEventListener("canplay", onCanPlay);
-          resolve();
-        };
-        // If already ready, resolve immediately
-        if (video.readyState >= 4) {
-          resolve();
-        } else {
-          video.addEventListener("canplay", onCanPlay);
+        const video = await waitForRef();
+        video.srcObject = stream;
+        video.muted = true;
+
+        const metadataPromise = new Promise<void>((resolve) => {
+          if (video.readyState >= 1) {
+            resolve();
+          } else {
+            video.addEventListener("loadedmetadata", () => resolve(), { once: true });
+          }
+        });
+
+        const videoTimeout = new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Video stream failed to initialize — camera may be in use by another app")),
+            VIDEO_TIMEOUT_MS
+          )
+        );
+
+        await Promise.race([metadataPromise, videoTimeout]);
+
+        try {
+          await video.play();
+        } catch {
+          video.muted = true;
+          await video.play();
         }
-      });
 
-      if (cancelled) return;
+        const w = video.videoWidth || 640;
+        const h = video.videoHeight || 480;
+        setVideoDims({ w, h });
+        console.log("[EmotionMirror] Video playing ✅", w, "x", h);
 
-      // Explicitly call play() — autoplay can be unreliable
-      try {
-        await video.play();
-      } catch (err) {
-        console.warn("[EmotionMirror] video.play() failed:", err);
+        setStatus("ready");
+        console.log("[EmotionMirror] Detection loop started ✅");
+        startDetection();
+      } catch (err: unknown) {
+        console.warn("[EmotionMirror] Init failed:", err);
+        const message = err instanceof Error ? err.message : String(err);
+
+        if (message.includes("Permission") || message.includes("NotAllowed")) {
+          setStatus("error-camera");
+          setErrorMsg("Camera permission denied. Click the 🔒 icon in the address bar → Reset permission → Retry");
+        } else if (
+          message.includes("Model") ||
+          message.includes("model") ||
+          message.includes("weights")
+        ) {
+          setStatus("error-models");
+          setErrorMsg(message);
+        } else {
+          setStatus("error-camera");
+          setErrorMsg(message);
+        }
       }
-
-      // 4. Read actual video dimensions
-      const w = video.videoWidth || 640;
-      const h = video.videoHeight || 480;
-      setVideoDims({ w, h });
-
-      if (cancelled) return;
-
-      // 5. Go!
-      setStatus("ready");
-      startDetection();
     }
 
     init();
 
-    // Cleanup on unmount
     return () => {
-      cancelled = true;
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -232,119 +249,111 @@ export const EmotionMirror = () => {
     ) as EmotionType;
   };
 
-  // ──────────────────────── Loading & Error States ────────────────────────
+  const isLoading = status === "loading-models" || status === "starting-camera" || status === "waiting-video";
+  const isError = status === "error-models" || status === "error-camera";
 
-  if (status === "loading-models" || status === "requesting-camera") {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-neutral-950">
-        <div className="flex flex-col items-center gap-4">
-          <Loader2 className="w-10 h-10 text-white/60 animate-spin" />
-          <p className="text-white/80 font-medium text-lg">
-            {status === "loading-models"
-              ? "Loading Vision Models..."
-              : "Requesting Camera Access..."}
-          </p>
-          <p className="text-white/40 text-sm max-w-xs text-center">
-            {status === "loading-models"
-              ? "Downloading neural network weights for face detection"
-              : "Please allow camera access when prompted"}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (status === "error") {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-neutral-950">
-        <div className="flex flex-col items-center gap-4 max-w-md text-center">
-          <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center">
-            <AlertTriangle className="w-8 h-8 text-red-400" />
-          </div>
-          <h2 className="text-white font-bold text-xl">
-            Failed to Load Detection Models
-          </h2>
-          <p className="text-white/60 text-sm">{errorDetail}</p>
-          <p className="text-white/40 text-xs">
-            Make sure the <code className="bg-white/10 px-1.5 py-0.5 rounded">/public/models/</code> folder
-            contains the face-api.js weight files.
-          </p>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-2 px-6 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors text-sm font-medium"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (status === "no-camera") {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-neutral-950">
-        <div className="flex flex-col items-center gap-4 max-w-md text-center">
-          <div className="w-16 h-16 rounded-full bg-yellow-500/20 flex items-center justify-center">
-            <CameraOff className="w-8 h-8 text-yellow-400" />
-          </div>
-          <h2 className="text-white font-bold text-xl">Camera Access Blocked</h2>
-          <p className="text-white/60 text-sm">{errorDetail}</p>
-          <p className="text-white/40 text-xs">
-            Make sure no other apps are using the camera, and check your browser
-            &amp; OS privacy settings.
-          </p>
-          <button
-            onClick={() => window.location.reload()}
-            className="mt-2 px-6 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors text-sm font-medium"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ──────────────────────── Main UI ────────────────────────
+  const loadingMessages: Record<string, [string, string]> = {
+    "loading-models": ["Loading Vision Models...", "Downloading neural network weights for face detection"],
+    "starting-camera": ["Starting Camera...", "Please allow camera access when prompted"],
+    "waiting-video": ["Connecting to camera stream...", "Initializing video feed"],
+  };
 
   return (
     <div className="flex h-screen bg-neutral-950 overflow-hidden">
       <div className="flex-1 relative flex items-center justify-center p-4 sm:p-8">
-        {/* Mirror toggle button */}
-        <button
-          onClick={() => setIsMirrored(!isMirrored)}
-          className="absolute top-6 right-6 z-50 bg-white/10 hover:bg-white/20 p-3 rounded-full backdrop-blur-md transition-colors"
-          title="Toggle Mirror Mode"
-        >
-          <FlipHorizontal className="text-white w-5 h-5" />
-        </button>
 
-        {/* Video + overlay container */}
+        {status === "ready" && (
+          <button
+            onClick={() => setIsMirrored(!isMirrored)}
+            className="absolute top-6 right-6 z-50 bg-white/10 hover:bg-white/20 p-3 rounded-full backdrop-blur-md transition-colors"
+            title="Toggle Mirror Mode"
+          >
+            <FlipHorizontal className="text-white w-5 h-5" />
+          </button>
+        )}
+
         <div
           className="relative rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/10 bg-neutral-900 max-w-full"
           style={{ width: videoDims.w, height: videoDims.h }}
         >
           <video
             ref={videoRef}
-            autoPlay
             muted
             playsInline
             className="object-cover w-full h-full"
-            style={{ transform: isMirrored ? "scaleX(-1)" : "none" }}
+            style={{
+              transform: isMirrored ? "scaleX(-1)" : "none",
+              opacity: status === "ready" ? 1 : 0,
+            }}
           />
-          {videoDims.w > 0 && (
+
+          {status === "ready" && videoDims.w > 0 && (
             <FaceOverlay
               faces={faces}
               videoDims={videoDims}
               isMirrored={isMirrored}
             />
           )}
+
+          {isLoading && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-20">
+              <Loader2 className="w-10 h-10 text-white/60 animate-spin" />
+              <p className="text-white/80 font-semibold text-lg">
+                {loadingMessages[status]?.[0]}
+              </p>
+              <p className="text-white/40 text-sm max-w-xs text-center">
+                {loadingMessages[status]?.[1]}
+              </p>
+            </div>
+          )}
+
+          {status === "error-models" && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-20 p-6">
+              <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center">
+                <AlertTriangle className="w-8 h-8 text-red-400" />
+              </div>
+              <h2 className="text-white font-bold text-xl">Failed to Load Detection Models</h2>
+              <p className="text-white/60 text-sm text-center">{errorMsg}</p>
+              <p className="text-white/40 text-xs text-center">
+                Make sure the <code className="bg-white/10 px-1.5 py-0.5 rounded">/public/models/</code> folder
+                contains the face-api.js weight files.
+              </p>
+              <button
+                onClick={() => window.location.reload()}
+                className="mt-2 px-6 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors text-sm font-medium"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {status === "error-camera" && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 z-20 p-6">
+              <div className="w-16 h-16 rounded-full bg-yellow-500/20 flex items-center justify-center">
+                <CameraOff className="w-8 h-8 text-yellow-400" />
+              </div>
+              <h2 className="text-white font-bold text-xl">📷 Camera Error</h2>
+              <p className="text-white/60 text-sm text-center">{errorMsg || "Could not access camera"}</p>
+              <p className="text-yellow-400/80 text-sm mt-1 text-center">
+                Close any app using your camera (Teams, Discord, OBS, Zoom, Skype) then click Retry
+              </p>
+              <button
+                onClick={() => window.location.reload()}
+                className="mt-2 px-6 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors text-sm font-medium"
+              >
+                Retry
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      <EmotionHistory
-        history={history}
-        dominant={getDominantSessionEmotion()}
-      />
+      {status === "ready" && (
+        <EmotionHistory
+          history={history}
+          dominant={getDominantSessionEmotion()}
+        />
+      )}
     </div>
   );
 };
