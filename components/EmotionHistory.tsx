@@ -1,12 +1,22 @@
-import { EmotionType } from '@/types/emotions';
-import { EmotionBadge } from './EmotionBadge';
+"use client";
 
-export const EmotionHistory = ({ history, dominant }: { history: EmotionType[]; dominant: EmotionType | null }) => (
-  <div className="w-64 bg-black/40 backdrop-blur-xl border-l border-white/10 p-6 flex flex-col h-full z-10">
+import { EmotionType } from "@/types/emotions";
+import { EmotionBadge } from "./EmotionBadge";
+
+export const EmotionHistory = ({
+  history,
+  dominant,
+}: {
+  history: EmotionType[];
+  dominant: EmotionType | null;
+}) => (
+  <div className="w-64 bg-black/40 backdrop-blur-xl border-l border-white/10 p-6 flex flex-col h-full z-10 max-sm:hidden">
     <h2 className="text-white font-semibold mb-4">Session Analytics</h2>
-    
+
     <div className="mb-8">
-      <h3 className="text-white/60 text-xs uppercase tracking-wider mb-2">Dominant Emotion</h3>
+      <h3 className="text-white/60 text-xs uppercase tracking-wider mb-2">
+        Dominant Emotion
+      </h3>
       {dominant ? (
         <EmotionBadge emotion={dominant} confidence={1} />
       ) : (
@@ -15,10 +25,15 @@ export const EmotionHistory = ({ history, dominant }: { history: EmotionType[]; 
     </div>
 
     <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-      <h3 className="text-white/60 text-xs uppercase tracking-wider mb-2">Recent Timeline</h3>
+      <h3 className="text-white/60 text-xs uppercase tracking-wider mb-2">
+        Recent Timeline
+      </h3>
       <div className="flex flex-col gap-2">
         {history.map((emotion, i) => (
-          <div key={i} className="animate-in slide-in-from-right-4 fade-in duration-300">
+          <div
+            key={i}
+            className="opacity-0 animate-[fadeSlideIn_0.3s_ease-out_forwards]"
+          >
             <EmotionBadge emotion={emotion} confidence={1} />
           </div>
         ))}
