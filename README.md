@@ -22,10 +22,10 @@ Key behaviors:
 
 | Layer | Choice | Why |
 |---|---|---|
-| Framework | Next.js 14 (App Router) | Vercel-native, fast, TypeScript support |
+| Framework | Next.js 16 (App Router) | Vercel-native, fast, TypeScript + React 19 support |
 | Detection | face-api.js | Browser-native inference, no backend required |
-| Models | TinyFaceDetector + faceExpressionNet | Fast + lightweight, runs at 30fps |
-| Styling | Tailwind CSS | Utility-first, responsive |
+| Models | TinyFaceDetector + faceExpressionNet | Fast + lightweight, runs at ~10fps (100ms intervals) |
+| Styling | Tailwind CSS v4 | Utility-first, modern engine, responsive |
 | Deployment | Vercel | Zero-config, static model serving |
 
 All inference runs **entirely in the browser** — no data leaves your device.
@@ -42,8 +42,8 @@ All inference runs **entirely in the browser** — no data leaves your device.
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/nish-debug15/emotion-mirror.git
-cd emotion-mirror
+git clone https://github.com/nish-debug15/emotion_mirror.git
+cd emotion_mirror
 ```
 
 ### 2. Install dependencies
@@ -95,24 +95,23 @@ Or connect your GitHub repo to [vercel.com](https://vercel.com) for automatic de
 ## Project Structure
 
 ```
-emotion-mirror/
+emotion_mirror/
 ├── app/
 │   ├── page.tsx              # Root page
 │   ├── layout.tsx            # App shell, metadata
 │   └── globals.css           # Global styles
 ├── components/
 │   ├── EmotionMirror.tsx     # Core: webcam stream + detection loop
-│   ├── FaceOverlay.tsx       # Canvas bounding boxes + labels
+│   ├── FaceOverlay.tsx       # DOM bounding boxes + labels
 │   ├── EmotionBadge.tsx      # Animated emotion pill component
 │   └── EmotionHistory.tsx    # Session sidebar timeline
 ├── lib/
-│   └── faceapi-loader.ts     # Lazy model loading utility
+│   └── faceapi_loader.ts     # Dynamic model loading utility
 ├── public/
 │   └── models/               # face-api.js model weights (static)
 ├── types/
 │   └── emotions.ts           # Shared TypeScript types
-└── scripts/
-    └── download-models.js    # Model download helper script
+└── download.js               # Model download helper script
 ```
 
 ---
@@ -120,9 +119,9 @@ emotion-mirror/
 ## How It Works
 
 1. `getUserMedia` requests webcam stream, feeds it into a `<video>` element
-2. face-api.js models load once on mount from `/public/models`
-3. `requestAnimationFrame` loop runs `detectAllFacesWithExpressions()` on each frame
-4. Results are drawn onto a `<canvas>` overlay positioned exactly over the video
+2. face-api.js models load once on mount from `/public/models` (dynamically imported client-side to prevent SSR issues)
+3. A 100ms `setInterval` loop runs face detection on each frame
+4. Results are rendered as styled HTML divs positioned absolutely over the video container
 5. Emotion labels use a rolling average over the last 5 frames to prevent flickering
 6. All state (history, dominant emotion) managed in React without any persistence
 
@@ -146,7 +145,7 @@ Building Emotion Mirror pushed me to think beyond just "make it work" — the ha
 
 The biggest challenge was handling real-time inference smoothly. face-api.js is fast, but emotion labels flickered wildly frame-to-frame even on a neutral expression. The fix was a rolling average buffer over the last 5 frames — a simple idea that made the experience dramatically smoother.
 
-Multi-face support required careful canvas coordinate math, especially ensuring bounding boxes and labels stayed in sync when faces moved. I also had to design for edge cases deliberately: a blank screen with no face detected isn't just a missing feature — it's a UX failure that needed its own intentional state.
+Multi-face support required careful overlay coordinate layout positioning, especially ensuring bounding boxes and labels stayed in sync when faces moved. I also had to design for edge cases deliberately: a blank screen with no face detected isn't just a missing feature — it's a UX failure that needed its own intentional state.
 
 The most interesting technical insight: keeping all ML inference client-side (zero server calls) wasn't a limitation — it became a privacy feature worth designing around.
 
